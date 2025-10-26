@@ -1,66 +1,44 @@
 from flask import Flask, request
-from twilio.twiml.messaging_response import MessagingResponse
 import os
 import json
-import re
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import gspread
+from google.oauth2.service_account import Credentials
+from twilio.twiml.messaging_response import MessagingResponse
 
 app = Flask(__name__)
 
-# ---------------- Google Sheets Setup ----------------
-creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")  # set this in Render env
-creds_dict = json.loads(creds_json)
-creds = service_account.Credentials.from_service_account_info(creds_dict)
-sheet_service = build('sheets', 'v4', credentials=creds)
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")  # create a Google Sheet and set this env
+# --- Load Google credentials from Render environment variable ---
+service_account_info = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+creds = Credentials.from_service_account_info(service_account_info)
+client = gspread.authorize(creds)
 
-def append_to_sheet(name, email, phone):
-    sheet = sheet_service.spreadsheets()
-    values = [[name, email, phone]]
-    sheet.values().append(
-        spreadsheetId=SPREADSHEET_ID,
-        range="Sheet1!A:C",
-        valueInputOption="RAW",
-        body={"values": values}
-    ).execute()
+# --- Open your Google Sheet ---
+# Replace with your actual Google Sheet ID
+SHEET_ID = "YOUR_GOOGLE_SHEET_ID"
+sheet = client.open_by_key(SHEET_ID).sheet1
 
-# ---------------- Data Extraction ----------------
-def extract_details(text):
-    # Extract email
-    email_match = re.search(r"[\w\.-]+@[\w\.-]+", text)
-    email = email_match.group(0) if email_match else ""
 
-    # Extract phone number (simple patterns)
-    phone_match = re.search(r"\+?\d[\d\s]{7,}\d", text)
-    phone = phone_match.group(0) if phone_match else ""
+# --- WhatsApp webhook route ---
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    # Get message and sender details from Twilio
+    msg = request.form.get("Body")
+    sender = request.form.get("From")
 
-    # Extract name (first line as naive approach)
-    name = text.strip().split("\n")[0] if text.strip() else ""
-    return name, email, phone
+    # Log to Google Sheet
+    sheet.append_row([sender, msg])
 
-# ---------------- Flask Routes ----------------
-@app.route('/')
+    # Respond back to the user
+    response = MessagingResponse()
+    response.message("✅ Message received and saved to Google Sheets!")
+
+    return str(response)
+
+
+@app.route("/", methods=["GET"])
 def home():
-    return "WhatsApp Resume Parser is running!"
+    return "WhatsApp Bot is running!"
 
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp_reply():
-    incoming_msg = request.values.get('Body', '').strip()
-    sender = request.values.get('From', '')
-    
-    # Extract info
-    name, email, phone = extract_details(incoming_msg)
-    
-    # Append to Google Sheet
-    if name or email or phone:
-        append_to_sheet(name, email, phone)
-    
-    # Respond on WhatsApp
-    resp = MessagingResponse()
-    msg = resp.message()
-    msg.body(f"Hi {name or 'there'}! Your details have been recorded.\nEmail: {email}\nPhone: {phone}")
-    return str(resp)
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host="0.0.0.0", port=10000)
